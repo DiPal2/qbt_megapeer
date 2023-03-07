@@ -20,7 +20,7 @@ import sys
 from io import open
 
 # Force UTF-8 printing
-sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+# sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
 
 
 def prettyPrinter(dictionary):
@@ -75,11 +75,6 @@ PAGES = 50
 def rng(t: int) -> range:
     return range(1, -(-t // PAGES))
 
-RE_TORRENTS = re.compile(
-    r'<span>Добавлен:<\/span>\s(.+?)\sв\s(.|\n)+?<a\sclass="med\stLink\shl-tags\sbold"\s'
-    r'href="\/(.+?)">(.+?)<\/a>(.|\n)+?<a\sclass="gr-button\str-dl\sdl-stub"\s'
-    r'href="(.+?)">(.|\n)(.+?)\s<img\ssrc="\/pic\/icon_tor_arrow.png">', re.S
-)
 RE_RESULTS = re.compile(r'<td\sstyle="padding-left:\s10px;">Всего:\s(\d{1,4})</td>', re.S)
 PATTERNS = ("%sbrowse.php?search=%s&cat=%i",)
 
@@ -151,6 +146,8 @@ class Megapeer:
     # establish connection
     session = urllib.request.build_opener()
 
+    torrents: dict = {}
+
     def __init__(self):
         # add proxy handler if needed
         if config.proxy:
@@ -200,9 +197,6 @@ class Megapeer:
             print(fd.name + " " + url)
 
     def searching(self, query: str, first: bool = False) -> Union[None, int]:
-        # with open('queries.txt', 'at') as f:
-        #     f.write(query)
-        #     f.write("\n")
         response = self._request(query)
         if self.error:
             return None
@@ -221,20 +215,56 @@ class Megapeer:
         self.draw(page)
 
         return torrents_found
+    
+    @staticmethod
+    def extractor(item, splitters):
+        result = []
+        for splitter in splitters:
+            if splitter[0] == '':
+                items = ['', item]
+            else:
+                items = item.split(splitter[0], 1)
+            if(len(items)) < 2:
+                break
+            data = items[1].split(splitter[1], 1)
+            result.append(data[0])
+            if(len(data)) < 2:
+                break
+            item = data[1]
+        return result
 
     def draw(self, html: str) -> None:
         splitted = html.split('<td class="row1 tLeft"><div class="topic-detail">')
         for smallhtml in splitted:
-            for tor in RE_TORRENTS.findall(smallhtml):
-                prettyPrinter({
-                    "engine_url": self.url,
-                    "desc_link": self.url + tor[2],
-                    "name": tor[3].replace('<span class="brackets-pair">',"").replace("</span>",""),
-                    "link": self.url + tor[5],
-                    "size": tor[7],
-                    "seeds": 10000,
-                    "leech": 10000
-                })
+            result = self.extractor(smallhtml, [
+                ["<span>Добавлен:</span> ", " в "],
+                ['<a class="med tLink hl-tags bold" href="/', '">'],
+                ['', '</a>'],
+                ['<a class="gr-button tr-dl dl-stub" href="', '">'],
+                ['\n', ' <img src="/pic/icon_tor_arrow.png"/>'],
+            ])
+            if len(result) < 5:
+                continue
+
+            ct = unescape(result[0]).split(" ")
+
+            months = ("января", "февраля", "марта", "апреля", "мая", "июня",
+                      "июля", "августа", "сентября", "октября", "ноября", "декабря")
+            for i, m in enumerate(months, 1):
+                if m in ct[1]:
+                    ct[1] = ct[1].replace(m, f"{i:02d}")
+                    break
+            ct = "[" + ct[2][-2:] + "." + ct[1] + "." + ("0" + ct[0])[-2:] + "] "
+
+            prettyPrinter({
+                "engine_url": self.url,
+                "desc_link": self.url + result[1],
+                "name": ct + unescape(result[2].replace('<span class="brackets-pair">',"").replace("</span>","")),
+                "link": self.url + result[3],
+                "size": result[4],
+                "seeds": 100,
+                "leech": 100
+            })
 
     def _request(
             self, url: str, data: Optional[bytes] = None, repeated: bool = False
