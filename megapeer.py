@@ -1,3 +1,7 @@
+# VERSION: 0.4
+# AUTHORS: DiPal
+
+# Megapeer.vip search engine plugin for qBittorrent
 
 import base64
 import json
@@ -74,6 +78,15 @@ PAGES = 50
 
 def rng(t: int) -> range:
     return range(1, -(-t // PAGES))
+
+ITEM_DIVIDER = '<td class="row1 tLeft"><div class="topic-detail">'
+SPLIT_ARRAY = [
+                ["<span>Добавлен:</span> ", " в "],
+                ['<a class="med tLink hl-tags bold" href="/', '">'],
+                ['', '</a>'],
+                ['<a class="gr-button tr-dl dl-stub" href="', '">'],
+                ['\n', ' <img src="/pic/icon_tor_arrow.png"/>'],
+            ]
 
 RE_RESULTS = re.compile(r'<td\sstyle="padding-left:\s10px;">Всего:\s(\d{1,4})</td>', re.S)
 PATTERNS = ("%sbrowse.php?search=%s&cat=%i",)
@@ -164,6 +177,7 @@ class Megapeer:
         if self.error:
             self.pretty_error(what)
             return None
+        what = urllib.request.quote(what.encode('cp1251'))
         query = PATTERNS[0] % (self.url, what.replace(" ", "+"), self.supported_categories[cat])
 
         # make first request (maybe it enough)
@@ -234,20 +248,13 @@ class Megapeer:
         return result
 
     def draw(self, html: str) -> None:
-        splitted = html.split('<td class="row1 tLeft"><div class="topic-detail">')
-        for smallhtml in splitted:
-            result = self.extractor(smallhtml, [
-                ["<span>Добавлен:</span> ", " в "],
-                ['<a class="med tLink hl-tags bold" href="/', '">'],
-                ['', '</a>'],
-                ['<a class="gr-button tr-dl dl-stub" href="', '">'],
-                ['\n', ' <img src="/pic/icon_tor_arrow.png"/>'],
-            ])
-            if len(result) < 5:
+        splitted = html.split(ITEM_DIVIDER)
+        for item in splitted:
+            result = self.extractor(item, SPLIT_ARRAY)
+            if len(result) < len(SPLIT_ARRAY):
                 continue
 
             ct = unescape(result[0]).split(" ")
-
             months = ("января", "февраля", "марта", "апреля", "мая", "июня",
                       "июля", "августа", "сентября", "октября", "ноября", "декабря")
             for i, m in enumerate(months, 1):
@@ -306,4 +313,4 @@ megapeer = Megapeer
 
 if __name__ == "__main__":
     engine = megapeer()
-    engine.search("doctor")
+    engine.search("доктор кто")
