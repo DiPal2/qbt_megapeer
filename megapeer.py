@@ -1,4 +1,4 @@
-# VERSION: 0.4
+# VERSION: 0.5
 # AUTHORS: DiPal
 
 # Megapeer.vip search engine plugin for qBittorrent
@@ -16,56 +16,15 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional, Union
 from urllib.error import URLError, HTTPError
-from urllib.parse import unquote
+import urllib.parse
 import urllib.request
 
-import codecs
-import sys
-from io import open
 
-# Force UTF-8 printing
-# sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
-
-
-def prettyPrinter(dictionary):
-    dictionary['size'] = anySizeToBytes(dictionary['size'])
-    outtext = "|".join((dictionary["link"], dictionary["name"].replace("|", " "),
-                        str(dictionary["size"]), str(dictionary["seeds"]),
-                        str(dictionary["leech"]), dictionary["engine_url"]))
-    if 'desc_link' in dictionary:
-        outtext = "|".join((outtext, dictionary["desc_link"]))
-
-    with open(1, 'w', encoding='utf-8', closefd=False) as utf8_stdout:
-        utf8_stdout.write("".join((outtext, "\n")))
-
-
-def anySizeToBytes(size_string):
-    """
-    Convert a string like '1 KB' to '1024' (bytes)
-    """
-    # separate integer from unit
-    try:
-        size, unit = size_string.split()
-    except:
-        try:
-            size = size_string.strip()
-            unit = ''.join([c for c in size if c.isalpha()])
-            if len(unit) > 0:
-                size = size[:-len(unit)]
-        except:
-            return -1
-    if len(size) == 0:
-        return -1
-    size = float(size)
-    if len(unit) == 0:
-        return int(size)
-    short_unit = unit.upper()[0]
-
-    # convert
-    units_dict = {'T': 40, 'G': 30, 'M': 20, 'K': 10}
-    if short_unit in units_dict:
-        size = size * 2**units_dict[short_unit]
-    return int(size)
+try:
+    from novaprinter import prettyPrinter
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent.parent.absolute()))
+    from novaprinter import prettyPrinter
 
 FILE = Path(__file__)
 BASEDIR = FILE.parent.absolute()
@@ -87,6 +46,7 @@ SPLIT_ARRAY = [
                 ['<a class="gr-button tr-dl dl-stub" href="', '">'],
                 ['\n', ' <img src="/pic/icon_tor_arrow.png"/>'],
             ]
+NOT_FOUND_STR = '<span style="color:#0000FF">По вашему запросу ничего не найдено. Попробуйте изменить свой запрос и/или параметры поиска.</span>'
 
 RE_RESULTS = re.compile(r'<td\sstyle="padding-left:\s10px;">Всего:\s(\d{1,4})</td>', re.S)
 PATTERNS = ("%sbrowse.php?search=%s&cat=%i",)
@@ -177,20 +137,21 @@ class Megapeer:
         if self.error:
             self.pretty_error(what)
             return None
-        what = urllib.request.quote(what.encode('cp1251'))
-        query = PATTERNS[0] % (self.url, what.replace(" ", "+"), self.supported_categories[cat])
+        phrase = urllib.parse.unquote(what)
+        what = urllib.parse.quote_plus(phrase, encoding='cp1251')
+        query = PATTERNS[0] % (self.url, what, self.supported_categories[cat])
 
         # make first request (maybe it enough)
-        t0, total = time.time(), self.searching(query, True)
+        t0, total = time.time(), self.searching(query, phrase, True)
         if self.error:
             self.pretty_error(what)
             return None
         # do async requests
         if total > PAGES:
             query = query + "&page={}"
-            qrs = [query.format(x) for x in rng(total)]
+            qrs = [(query.format(x), phrase) for x in rng(total)]
             with ThreadPoolExecutor(len(qrs)) as executor:
-                executor.map(self.searching, qrs, timeout=30)
+                executor.map(self.searching_wrapper, qrs, timeout=30)
 
         logger.debug(f"--- {time.time() - t0} seconds ---")
         logger.info(f"Found torrents: {total}")
@@ -210,7 +171,11 @@ class Megapeer:
             logger.debug(fd.name + " " + url)
             print(fd.name + " " + url)
 
-    def searching(self, query: str, first: bool = False) -> Union[None, int]:
+    def searching_wrapper(self, args):
+        return self.searching(*args)
+
+    def searching(self, query: str, phrase:str, first: bool = False) -> Union[None, int]:
+        logger.debug(f"searching {query}")
         response = self._request(query)
         if self.error:
             return None
@@ -221,12 +186,14 @@ class Megapeer:
             # firstly we check if there is a result
             result = RE_RESULTS.search(page)
             if not result:
+                if NOT_FOUND_STR in page:
+                    return 0
                 self.error = "Unexpected page content"
                 return None
             torrents_found = int(result[1])
             if not torrents_found:
                 return 0
-        self.draw(page)
+        self.draw(page, phrase.split(' '))
 
         return torrents_found
     
@@ -247,7 +214,7 @@ class Megapeer:
             item = data[1]
         return result
 
-    def draw(self, html: str) -> None:
+    def draw(self, html: str, phrases) -> None:
         splitted = html.split(ITEM_DIVIDER)
         for item in splitted:
             result = self.extractor(item, SPLIT_ARRAY)
@@ -263,15 +230,24 @@ class Megapeer:
                     break
             ct = "[" + ct[2][-2:] + "." + ct[1] + "." + ("0" + ct[0])[-2:] + "] "
 
-            prettyPrinter({
-                "engine_url": self.url,
-                "desc_link": self.url + result[1],
-                "name": ct + unescape(result[2].replace('<span class="brackets-pair">',"").replace("</span>","")),
-                "link": self.url + result[3],
-                "size": result[4],
-                "seeds": 100,
-                "leech": 100
-            })
+            tn = unescape(result[2].replace('<span class="brackets-pair">',"").replace("</span>",""))
+
+            all_found = True
+            for phrase in phrases:
+                all_found = phrase in tn
+                if not all_found:
+                    break
+
+            if all_found:
+                prettyPrinter({
+                    "engine_url": self.url,
+                    "desc_link": self.url + result[1],
+                    "name": ct + tn,
+                    "link": self.url + result[3],
+                    "size": result[4],
+                    "seeds": 100,
+                    "leech": 100
+                })
 
     def _request(
             self, url: str, data: Optional[bytes] = None, repeated: bool = False
@@ -299,7 +275,7 @@ class Megapeer:
 
     def pretty_error(self, what: str) -> None:
         prettyPrinter({"engine_url": self.url,
-                       "name": f"[{unquote(what)}][Error]: {self.error}",
+                       "name": f"[{urllib.parse.unquote(what)}][Error]: {self.error}",
                        "link": self.url + "error",
                        "size": "1 TB",  # lol
                        "seeds": 100,
