@@ -1,4 +1,4 @@
-# VERSION: 0.5
+# VERSION: 0.7
 # AUTHORS: DiPal
 
 # Megapeer.vip search engine plugin for qBittorrent
@@ -41,11 +41,13 @@ def rng(t: int) -> range:
 ITEM_DIVIDER = '<td class="row1 tLeft"><div class="topic-detail">'
 SPLIT_ARRAY = [
                 ["<span>Добавлен:</span> ", " в "],
+                ['<div class="f-name">', "</div>"],
                 ['<a class="med tLink hl-tags bold" href="/', '">'],
                 ['', '</a>'],
                 ['<a class="gr-button tr-dl dl-stub" href="', '">'],
                 ['\n', ' <img src="/pic/icon_tor_arrow.png"/>'],
             ]
+MOVIES_AND_TV = "Кино, Видео и TV"
 NOT_FOUND_STR = '<span style="color:#0000FF">По вашему запросу ничего не найдено. Попробуйте изменить свой запрос и/или параметры поиска.</span>'
 
 RE_RESULTS = re.compile(r'<td\sstyle="padding-left:\s10px;">Всего:\s(\d{1,4})</td>', re.S)
@@ -64,7 +66,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Config:
     torrent_date: bool = True
-    magnet: bool = False
     proxy: bool = False
     proxies: dict = field(default_factory=lambda: {"http": "", "https": ""})
     ua: str = ("Mozilla/5.0 (X11; Linux i686; rv:38.0) Gecko/20100101 "
@@ -109,7 +110,7 @@ class Megapeer:
                             "tv": 0,
                             "music": 94,
                             "games": 28,
-                            "anime": 0,
+                            "anime": 76,
                             "software": 107,
                             "pictures": 0,
                             "books": 52}
@@ -137,19 +138,20 @@ class Megapeer:
         if self.error:
             self.pretty_error(what)
             return None
-        phrase = urllib.parse.unquote(what)
-        what = urllib.parse.quote_plus(phrase, encoding='cp1251')
+        what = urllib.parse.quote_plus(urllib.parse.unquote(what), encoding='cp1251')
         query = PATTERNS[0] % (self.url, what, self.supported_categories[cat])
 
+        cat_filter = MOVIES_AND_TV if cat in ("movies", "tv") else None
+
         # make first request (maybe it enough)
-        t0, total = time.time(), self.searching(query, phrase, True)
+        t0, total = time.time(), self.searching(query, cat_filter, True)
         if self.error:
             self.pretty_error(what)
             return None
         # do async requests
         if total > PAGES:
             query = query + "&page={}"
-            qrs = [(query.format(x), phrase) for x in rng(total)]
+            qrs = [(query.format(x), cat_filter) for x in rng(total)]
             with ThreadPoolExecutor(len(qrs)) as executor:
                 executor.map(self.searching_wrapper, qrs, timeout=30)
 
@@ -174,7 +176,7 @@ class Megapeer:
     def searching_wrapper(self, args):
         return self.searching(*args)
 
-    def searching(self, query: str, phrase:str, first: bool = False) -> Union[None, int]:
+    def searching(self, query: str, cat_filter, first: bool = False) -> Union[None, int]:
         logger.debug(f"searching {query}")
         response = self._request(query)
         if self.error:
@@ -193,7 +195,7 @@ class Megapeer:
             torrents_found = int(result[1])
             if not torrents_found:
                 return 0
-        self.draw(page, phrase.split(' '))
+        self.draw(page, cat_filter)
 
         return torrents_found
     
@@ -214,7 +216,7 @@ class Megapeer:
             item = data[1]
         return result
 
-    def draw(self, html: str, phrases) -> None:
+    def draw(self, html: str, cat_filter) -> None:
         splitted = html.split(ITEM_DIVIDER)
         for item in splitted:
             result = self.extractor(item, SPLIT_ARRAY)
@@ -230,21 +232,13 @@ class Megapeer:
                     break
             ct = "[" + ct[2][-2:] + "." + ct[1] + "." + ("0" + ct[0])[-2:] + "] "
 
-            tn = unescape(result[2].replace('<span class="brackets-pair">',"").replace("</span>",""))
-
-            all_found = True
-            for phrase in phrases:
-                all_found = phrase in tn
-                if not all_found:
-                    break
-
-            if all_found:
+            if cat_filter is None or cat_filter in result[1]:
                 prettyPrinter({
                     "engine_url": self.url,
-                    "desc_link": self.url + result[1],
-                    "name": ct + tn,
-                    "link": self.url + result[3],
-                    "size": result[4],
+                    "desc_link": self.url + result[2],
+                    "name": ct + unescape(result[3].replace('<span class="brackets-pair">',"").replace("</span>","")),
+                    "link": self.url + result[4],
+                    "size": result[5],
                     "seeds": 100,
                     "leech": 100
                 })
